@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import json
 import shutil
 import os
 import uuid
@@ -9,7 +10,14 @@ import uuid
 from app.models import SessionLocal, Story, RenderCost
 from app.settings import get_settings
 from app.tasks import process_story_task
-from app.services.comfyui import load_comfy_config, save_comfy_config, test_comfy_connection, validate_comfy_config
+from app.services.comfyui import (
+    get_workflow_template_status,
+    load_comfy_config,
+    save_comfy_config,
+    save_workflow_template,
+    test_comfy_connection,
+    validate_comfy_config,
+)
 
 app = FastAPI(title="MagicStory POC API")
 settings = get_settings()
@@ -36,13 +44,15 @@ class ComfyConfigPayload(BaseModel):
     用途: 接收前端提交的 Comfy Cloud 或本地 ComfyUI 配置
     """
     provider: str
-    label: str = "Comfy Cloud"
+    label: str = "本地 ComfyUI"
     base_url: str = ""
     api_key: str = ""
-    workflow_api: str = "/api/v1/workflows"
+    workflow_api: str = "/api/prompt"
     workflow_id: str = ""
     local_endpoint: str = "http://127.0.0.1:8188"
     client_id: str = "magic-story-poc"
+    positive_prompt: str = "children's picture book illustration, clay art, soft lighting, colorful scene, {narration}"
+    negative_prompt: str = "blurry, low quality, distorted, extra limbs, text, watermark"
 
 
 class RuntimeConfigResponse(BaseModel):
@@ -166,6 +176,30 @@ def get_comfy_settings():
     return load_comfy_config()
 
 
+@app.get("/api/settings/comfy/workflow")
+def get_comfy_workflow_status():
+    """
+    获取工作流模板状态
+    用途: 让前端知道是否已经上传真实 ComfyUI 重绘所需的 workflow 模板
+    """
+    return get_workflow_template_status()
+
+
+@app.post("/api/settings/comfy/workflow")
+async def upload_comfy_workflow(file: UploadFile = File(...)):
+    """
+    上传工作流模板
+    用途: 保存 ComfyUI API workflow JSON 模板，供图片重绘阶段动态注入占位符
+    """
+    if not file.filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="请上传 ComfyUI 导出的 API 格式 JSON 文件。")
+    content = await file.read()
+    try:
+        return save_workflow_template(content)
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail="上传的 workflow 不是合法 JSON。") from error
+
+
 @app.put("/api/settings/comfy")
 def update_comfy_settings(payload: ComfyConfigPayload):
     """
@@ -216,6 +250,7 @@ def get_result(story_id: str):
         
         return {
             "final_video_url": story.final_video_path,
+            "redrawn_image_url": story.redrawn_image_path,
             "narration": story.corrected_narration,
             "tts_audio_url": tts_audio_url,
             "cost_breakdown": [{"step": c.step_name, "cost": c.cost_usd} for c in costs],

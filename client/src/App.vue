@@ -17,10 +17,12 @@ const storyId = ref<string>('')
 const progressPct = ref(0)
 const stepMessage = ref('')
 const finalVideoUrl = ref('')
+const redrawnImageUrl = ref('')
 const ttsAudioUrl = ref('')
 const narrationText = ref('')
 const recorderRef = ref<InstanceType<typeof AudioRecorder> | null>(null)
 let pollTimer: number | null = null
+const workflowUploading = ref(false)
 
 type ComfyProvider = 'cloud' | 'local'
 
@@ -33,17 +35,24 @@ interface ComfySettings {
   workflow_id: string
   local_endpoint: string
   client_id: string
+  positive_prompt: string
+  negative_prompt: string
+  template_ready?: boolean
+  template_path?: string | null
+  placeholders?: string[]
 }
 
 const comfySettings = ref<ComfySettings>({
-  provider: 'cloud',
-  label: 'Comfy Cloud',
+  provider: 'local',
+  label: '本地 ComfyUI',
   base_url: '',
   api_key: '',
-  workflow_api: '/api/v1/workflows',
+  workflow_api: '/api/prompt',
   workflow_id: '',
   local_endpoint: 'http://127.0.0.1:8188',
-  client_id: 'magic-story-poc'
+  client_id: 'magic-story-poc',
+  positive_prompt: "children's picture book illustration, clay art, soft lighting, colorful scene, {narration}",
+  negative_prompt: 'blurry, low quality, distorted, extra limbs, text, watermark'
 })
 const configSaving = ref(false)
 const configTesting = ref(false)
@@ -92,6 +101,32 @@ const testComfySettings = async () => {
     configStatus.value = err?.response?.data?.detail || '连接测试失败。'
   } finally {
     configTesting.value = false
+  }
+}
+
+// 上传工作流模板
+// 用途: 保存从 ComfyUI 导出的 API workflow JSON，让后端在重绘阶段注入占位符后直接执行
+const uploadWorkflowTemplate = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  workflowUploading.value = true
+  configStatus.value = ''
+  const formData = new FormData()
+  formData.append('file', file)
+  try {
+    const res = await axios.post('/api/settings/comfy/workflow', formData)
+    comfySettings.value.template_ready = res.data.template_ready
+    comfySettings.value.template_path = res.data.template_path
+    comfySettings.value.placeholders = res.data.placeholders
+    configStatus.value = 'Workflow 模板上传成功，后端会在重绘时自动注入占位符。'
+  } catch (err: any) {
+    console.error(err)
+    configStatus.value = err?.response?.data?.detail || 'Workflow 上传失败。'
+  } finally {
+    workflowUploading.value = false
+    input.value = ''
   }
 }
 
@@ -177,6 +212,7 @@ const fetchResult = async () => {
   try {
     const res = await axios.get(`/api/result/${storyId.value}`)
     finalVideoUrl.value = res.data.final_video_url
+    redrawnImageUrl.value = res.data.redrawn_image_url || ''
     ttsAudioUrl.value = res.data.tts_audio_url || ''
     narrationText.value = res.data.narration || ''
     currentStage.value = 'result'
@@ -203,6 +239,7 @@ const reset = () => {
   imageBlob.value = null
   audioBlob.value = null
   finalVideoUrl.value = ''
+  redrawnImageUrl.value = ''
   ttsAudioUrl.value = ''
   narrationText.value = ''
   recorderRef.value?.cancelRecording()
@@ -265,8 +302,8 @@ onMounted(() => {
           </label>
 
           <label v-if="comfySettings.provider === 'cloud'" class="field">
-            <span>Workflow API 路径</span>
-            <input v-model="comfySettings.workflow_api" type="text" placeholder="/api/v1/workflows" />
+            <span>提交接口路径</span>
+            <input v-model="comfySettings.workflow_api" type="text" placeholder="/api/prompt" />
           </label>
 
           <label v-if="comfySettings.provider === 'cloud'" class="field">
@@ -282,6 +319,30 @@ onMounted(() => {
           <label v-if="comfySettings.provider === 'local'" class="field">
             <span>Client ID</span>
             <input v-model="comfySettings.client_id" type="text" placeholder="magic-story-poc" />
+          </label>
+
+          <label class="field field-wide">
+            <span>正向提示词模板</span>
+            <textarea v-model="comfySettings.positive_prompt" rows="3" placeholder="支持 {narration} 占位符"></textarea>
+          </label>
+
+          <label class="field field-wide">
+            <span>负向提示词模板</span>
+            <textarea v-model="comfySettings.negative_prompt" rows="3" placeholder="blurry, low quality, distorted"></textarea>
+          </label>
+        </div>
+
+        <div class="workflow-panel">
+          <div>
+            <p class="workflow-title">Workflow 模板</p>
+            <p class="workflow-desc">上传从 ComfyUI 导出的 API 格式 JSON，并在模板里使用占位符：{{ comfySettings.placeholders?.join(' / ') }}</p>
+            <p class="workflow-state" :class="{ ready: comfySettings.template_ready }">
+              {{ comfySettings.template_ready ? `已就绪：${comfySettings.template_path}` : '尚未上传 workflow 模板，ComfyUI 重绘会自动跳过。' }}
+            </p>
+          </div>
+          <label class="upload-btn">
+            {{ workflowUploading ? '上传中...' : '上传 Workflow JSON' }}
+            <input type="file" accept=".json,application/json" :disabled="workflowUploading" @change="uploadWorkflowTemplate" />
           </label>
         </div>
 
@@ -327,6 +388,10 @@ onMounted(() => {
         </div>
         <div v-else class="video-placeholder">
           <p>视频已生成，但当前未拿到可播放地址。</p>
+        </div>
+        <div v-if="redrawnImageUrl" class="image-card">
+          <h3>ComfyUI 重绘结果</h3>
+          <img class="redrawn-image" :src="redrawnImageUrl" alt="ComfyUI redrawn result" />
         </div>
         <div v-if="ttsAudioUrl" class="tts-card">
           <h3>真实 TTS 试听</h3>
@@ -416,12 +481,69 @@ onMounted(() => {
   font-size: 14px;
   color: #304056;
 }
+.field-wide {
+  grid-column: 1 / -1;
+}
 .field input {
   border: 1px solid #cbd5e1;
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
   background: rgba(255, 255, 255, 0.92);
+}
+.field textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  resize: vertical;
+  font-family: inherit;
+}
+.workflow-panel {
+  margin-top: 18px;
+  border: 1px dashed #b8c4d5;
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.workflow-title {
+  margin: 0;
+  font-weight: 700;
+  color: #17324d;
+}
+.workflow-desc {
+  margin: 6px 0 0;
+  color: #5e6576;
+  font-size: 13px;
+}
+.workflow-state {
+  margin: 10px 0 0;
+  color: #8a4b13;
+  font-size: 13px;
+  word-break: break-all;
+}
+.workflow-state.ready {
+  color: #1b4d37;
+}
+.upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #17324d;
+  background: #17324d;
+  color: #fff;
+  border-radius: 999px;
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.upload-btn input {
+  display: none;
 }
 .config-actions {
   display: flex;
@@ -508,6 +630,23 @@ onMounted(() => {
   color: #d7deeb;
   margin: 12px 0 0;
   font-size: 14px;
+}
+.image-card {
+  width: 100%;
+  max-width: 600px;
+  background: #f6f8fb;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  padding: 16px;
+}
+.image-card h3 {
+  margin: 0 0 12px;
+}
+.redrawn-image {
+  width: 100%;
+  display: block;
+  border-radius: 10px;
+  background: #fff;
 }
 .tts-card {
   width: 100%;

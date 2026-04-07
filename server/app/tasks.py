@@ -5,6 +5,7 @@ import time
 from app.models import SessionLocal, Story, RenderCost
 from app.settings import get_settings
 from app.services.asr import transcribe_audio
+from app.services.comfyui import run_image_redraw
 from app.services.llm import analyze_story_text
 from app.services.tts import generate_speech_file
 from app.services.video import compose_story_video
@@ -95,7 +96,27 @@ def process_story_task(story_id: str):
         # Step 3: ComfyUI (Image Redraw)
         start_time = time.time()
         update_story_progress(story_id, "comfyui", 40)
-        time.sleep(5) # Mock ComfyUI delay
+        db = SessionLocal()
+        try:
+            story = db.query(Story).filter(Story.id == story_id).first()
+            if not story:
+                raise RuntimeError("未找到故事记录，无法执行 ComfyUI 重绘。")
+            if not story.original_image_path:
+                raise RuntimeError("未找到原始图片，无法执行 ComfyUI 重绘。")
+
+            redraw_prompt = story.corrected_narration or story.transcribed_text or "充满想象力的儿童插画"
+            redrawn_output_path = os.path.join(OUTPUT_DIR, f"{story_id}_redrawn.png")
+            redrawn_local_path = run_image_redraw(
+                story_id=story_id,
+                image_path=story.original_image_path,
+                narration=redraw_prompt,
+                output_path=redrawn_output_path,
+            )
+            if redrawn_local_path:
+                story.redrawn_image_path = f"/media/outputs/{story_id}_redrawn.png"
+                db.commit()
+        finally:
+            db.close()
         record_cost(story_id, "comfyui", 0.03, int((time.time() - start_time) * 1000))
 
         # Step 4: Video Generation
@@ -129,13 +150,18 @@ def process_story_task(story_id: str):
             story = db.query(Story).filter(Story.id == story_id).first()
             if not story:
                 raise RuntimeError("未找到故事记录，无法执行 FFmpeg 合成。")
-            if not story.original_image_path:
+            image_path = story.original_image_path
+            if story.redrawn_image_path:
+                candidate = os.path.join(OUTPUT_DIR, f"{story_id}_redrawn.png")
+                if os.path.exists(candidate):
+                    image_path = candidate
+            if not image_path:
                 raise RuntimeError("未找到原始图片，无法执行 FFmpeg 合成。")
 
             narration_audio_path = os.path.join(OUTPUT_DIR, f"{story_id}_narration.mp3")
             final_video_path = os.path.join(OUTPUT_DIR, f"{story_id}_story.mp4")
             compose_story_video(
-                image_path=story.original_image_path,
+                image_path=image_path,
                 audio_path=narration_audio_path,
                 output_path=final_video_path,
             )
