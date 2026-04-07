@@ -1,6 +1,6 @@
 # 奇思妙画 (MagicStory) - POC Demo 运行与自测指南
 
-本项目是“奇思妙画”的 POC (Proof of Concept) 演示环境，主要用于验证核心链路：**儿童涂鸦 + 语音 -> AI管线 -> 生成动画视频**。当前版本已经接入了四个真实可用的 AI / 媒体环节：**本地 ASR (`faster-whisper`)**、**可切换 Provider 的本地/兼容式 LLM**、**Edge-TTS 中文语音合成**、**FFmpeg MP4 合成**；图像生成和视频生成链路仍为 Mock 状态，用于验证前后端交互、任务队列和页面流转。
+本项目是“奇思妙画”的 POC (Proof of Concept) 演示环境，主要用于验证核心链路：**儿童涂鸦 + 语音 -> AI管线 -> 生成动画视频**。当前版本已经接入了五个真实可用的 AI / 媒体环节：**本地 ASR (`faster-whisper`)**、**可切换 Provider 的本地/兼容式 LLM**、**ComfyUI 图片重绘接入层**、**Edge-TTS 中文语音合成**、**FFmpeg MP4 合成**；其中图片重绘需要您上传 ComfyUI API workflow 模板后才会真正执行，视频生成链路仍为 Mock 状态。
 
 下面将引导您如何在本地启动服务并开展自测。
 
@@ -66,7 +66,18 @@
 
 ### 3.1 启动后端服务
 
-后端服务包含 FastAPI 主服务、Redis 容器以及 Celery 异步任务处理器。
+后端服务包含三部分：
+
+- FastAPI 主服务
+- Redis
+- Celery 异步任务处理器
+
+本地启动**不一定要用 Docker**。当前项目支持两种后端启动方式：
+
+- 方式 A：`Docker Compose`
+- 方式 B：纯命令行本地启动
+
+#### 方式 A：使用 Docker Compose
 
 1. 打开终端，进入 `server` 目录：
    ```bash
@@ -78,13 +89,52 @@
    ```
    > 提示：`-d` 参数表示在后台运行。首次启动需要拉取基础镜像、安装 Python 依赖，并在首次执行 ASR 时下载 `faster-whisper` 模型，可能需要几分钟时间。
 
-3. **验证后端状态**：
+#### 方式 B：使用命令行直接启动
+
+如果你本机已经安装了 Python、Redis、FFmpeg，也可以完全不使用 Docker，直接本地启动。
+
+1. 打开终端，进入 `server` 目录：
+   ```bash
+   cd server
+   ```
+2. 创建并激活虚拟环境：
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. 安装依赖：
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. 准备 `.env`：
+   ```bash
+   cp .env.example .env
+   ```
+5. 启动本地 Redis：
+   ```bash
+   redis-server
+   ```
+   如果你的 Redis 不是默认地址，请同步修改 `.env` 里的 `REDIS_URL`。
+6. 打开第二个终端，进入 `server` 目录并激活虚拟环境后，启动 FastAPI：
+   ```bash
+   source .venv/bin/activate
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
+7. 打开第三个终端，进入 `server` 目录并激活虚拟环境后，启动 Celery Worker：
+   ```bash
+   source .venv/bin/activate
+   celery -A app.tasks.celery_app worker --loglevel=info
+   ```
+
+不管你使用哪种方式，启动完成后都可以做以下验证：
+
+1. **验证后端状态**：
    打开浏览器访问 [http://localhost:8000/health](http://localhost:8000/health)，如果返回 `{"status":"ok"}`，说明后端已成功启动。
 
-4. **可选：确认媒体目录可访问**
+2. **可选：确认媒体目录可访问**
    当前后端会把上传文件、TTS 输出文件和 FFmpeg 合成后的 MP4 都暴露在 `/media/*` 路径下。服务启动后，可以访问类似 [http://localhost:8000/media/](http://localhost:8000/media/) 的静态资源前缀来确认媒体目录已挂载。
 
-5. **可选：确认运行时配置**
+3. **可选：确认运行时配置**
    访问 [http://localhost:8000/api/settings/runtime](http://localhost:8000/api/settings/runtime)，可以查看当前后端实际生效的 `LLM / ASR / TTS` 配置摘要。
 
 ### 3.2 启动前端服务
@@ -117,6 +167,7 @@
    - 支持切换为 **Comfy Cloud**。
    - 支持切换为 **本地 ComfyUI**。
    - 支持保存配置，并点击“测试连接”做基础校验。
+   - 支持上传 **ComfyUI API workflow JSON 模板**。
    - 这套配置已经会持久化到后端，供后续真实接入图片生成工作流时直接复用。
 
 1. 在白板上使用鼠标或触摸板进行绘画。
@@ -141,7 +192,7 @@
 4. 观察提示文字的变化，它模拟了后端的 AI 管线流程：
    - 正在聆听你的故事... (真实 `faster-whisper` ASR)
    - 正在理解画面... (真实本地 / 兼容式 LLM)
-   - 正在施展魔法... (ComfyUI)
+   - 正在施展魔法... (真实 ComfyUI 重绘，需已上传 workflow 模板)
    - 正在拍摄动画片... (I2V / 2.5D)
    - 正在请配音员准备... (真实 Edge-TTS)
    - 最后润色中... (真实 FFmpeg 合成)
@@ -151,6 +202,7 @@
 2. 您会看到提示“你的动画片完成了！”。
 3. 当前结果页会展示：
    - **真实生成的 MP4 视频播放器**
+   - **如果配置完整，会展示 ComfyUI 重绘结果图**
    - **真实生成的中文 TTS 音频播放器**
    - 本次任务生成的**旁白文本**
 4. *注意：当前 POC 阶段，视频内容仍然是“静态涂鸦图 + 旁白音频”的合成成片，不是 AI 动画生成片段；但 ASR、LLM、TTS 与 FFmpeg 都已接入真实实现。*
@@ -165,8 +217,9 @@
 - **上传的文件**: 进入 `server/data/uploads` 目录，您会看到以 `UUID` 命名的 `.png` 和 `.webm` 文件，这些就是您刚才上传的原始涂鸦和录音。
 - **TTS 输出文件**: 进入 `server/data/outputs` 目录，您会看到 `{story_id}_narration.mp3` 这样的文件名，这些是通过 `edge-tts` 真实生成的中文语音。
 - **最终视频文件**: 进入 `server/data/outputs` 目录，您会看到 `{story_id}_story.mp4` 这样的文件名，这些是通过 FFmpeg 真实合成的最终成片。
+- **重绘结果图片**: 如果您已经上传 workflow 模板并成功跑通 ComfyUI，`server/data/outputs` 下还会出现 `{story_id}_redrawn.png`。
 - **数据库记录**: 后端使用 SQLite 数据库，文件位于 `server/data/magic_story.db`。您可以使用任何 SQLite 客户端（如 DB Browser for SQLite）打开它，查看 `stories` 表和 `render_costs` 表的生成记录和模拟花费。
-- **图像服务配置**: 页面中保存的 Comfy Cloud / 本地 ComfyUI 配置会落到 `server/data/settings/comfy_config.json`，便于后续接入真实工作流时直接读取。
+- **图像服务配置**: 页面中保存的 Comfy Cloud / 本地 ComfyUI 配置会落到 `server/data/settings/comfy_config.json`，而 workflow 模板会保存为 `server/data/settings/comfy_workflow_api.json`。
 
 ## 6. 当前真实接入与 Mock 边界
 
@@ -175,6 +228,7 @@
 - **已真实接入**
   - `ASR`: 使用 `faster-whisper`
   - `LLM 路由`: 使用可切换 Provider 的本地 / 兼容式模型接口
+  - `ComfyUI 图片重绘`: 支持根据上传的 workflow 模板执行真实重绘
   - `TTS`: 使用 `edge-tts`
   - `FFmpeg 最终合成`: 使用本地 `ffmpeg` 将静态图与旁白音频合成为 MP4
   - 默认 LLM 模式：`.env` 中配置的 `ollama` 或 `openai_compatible`
@@ -183,7 +237,6 @@
   - 输出格式：MP3 + MP4
 
 - **仍为 Mock**
-  - `ComfyUI / Comfy Cloud 图片生成`
   - `视频生成`
 
 这意味着当前项目已经具备：
@@ -192,11 +245,12 @@
 - 真实异步任务流转
 - 真实本地 ASR 转写
 - 真实本地 / 兼容式 LLM 文本润色与路由决策
+- 在配置完整时执行真实 ComfyUI 图片重绘
 - 真实中文 TTS 生成与前端试听
 - 真实 MP4 成片合成与前端播放
 - 图像服务配置的前后端打通
 
-但尚未真正调用 ComfyUI 或 Comfy Cloud 执行图片重绘工作流。
+但“真实重绘”是否执行，取决于您是否上传了可用的 ComfyUI API workflow 模板，以及对应模型和节点是否已在 ComfyUI 环境中准备好。
 
 ## 7. LLM 与 ASR 配置说明
 
@@ -229,19 +283,34 @@
 
 - **Comfy Cloud**
   - 适合后续接入官方云端工作流 API
-  - 当前可填写：`Base URL`、`API Key`、`Workflow API 路径`、`Workflow ID`
+  - 当前可填写：`Base URL`、`API Key`、`提交接口路径`、`Workflow ID`
   - 点击“测试连接”时会先做参数完整性校验
 
 - **本地 ComfyUI**
   - 适合本机或局域网已有 ComfyUI 服务的场景
   - 当前可填写：`本地服务地址`、`Client ID`
   - 点击“测试连接”会请求 `<local_endpoint>/system_stats` 做基础连通性测试
+  - 如果要跑真实图片重绘，还需要上传 ComfyUI 导出的 **API 格式 workflow JSON**
+
+workflow 模板要求：
+
+- 请在 ComfyUI 中导出 **API Format** 的 workflow JSON
+- 在模板中使用以下占位符，后端会在执行时自动替换：
+  - `__INPUT_IMAGE__`
+  - `__POSITIVE_PROMPT__`
+  - `__NEGATIVE_PROMPT__`
+  - `__OUTPUT_PREFIX__`
+- 推荐把加载图片节点中的文件名写成 `__INPUT_IMAGE__`
+- 推荐把正负提示词节点中的文本分别写成 `__POSITIVE_PROMPT__`、`__NEGATIVE_PROMPT__`
+- 推荐把保存图片节点中的文件名前缀写成 `__OUTPUT_PREFIX__`
 
 当前这些配置已经通过后端接口持久化：
 
 - `GET /api/settings/comfy`: 获取当前配置
 - `PUT /api/settings/comfy`: 保存配置
 - `POST /api/settings/comfy/test`: 测试配置
+- `GET /api/settings/comfy/workflow`: 查看 workflow 模板状态
+- `POST /api/settings/comfy/workflow`: 上传 workflow 模板
 - `GET /api/settings/runtime`: 查看当前后端生效的 `.env` 模型配置摘要
 
 ## 9. 常见问题排查
@@ -262,6 +331,8 @@
   A: 请先确认后端镜像中的 `ffmpeg` 可执行文件可用，并查看 Celery Worker 日志里是否提示输入图片、TTS 音频缺失或编码失败。
 - **Q: 本地 ComfyUI 测试连接失败？**
   A: 请确认本地 ComfyUI 服务已经启动，并且 `system_stats` 接口可从当前浏览器访问的后端环境连通。
+- **Q: ComfyUI 阶段没有产出重绘图？**
+  A: 请检查是否已经上传 API workflow JSON、模板里是否正确使用了占位符，以及 ComfyUI 环境中是否安装了 workflow 依赖的模型与节点。
 
 ---
 完成以上步骤后，即代表整个 POC Demo 的前后端基础骨架和交互流程验证通过。当前已经具备真实的本地 ASR、本地 / 兼容式 LLM、Edge-TTS 和 FFmpeg 合成能力；下一步即可继续在 `server/app/services` 中逐步接入真实的 ComfyUI / Comfy Cloud 和视频生成接口。
